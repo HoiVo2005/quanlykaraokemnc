@@ -663,7 +663,6 @@ export default function ReportsPage() {
                                                             <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                                                                 <th className="text-left py-2 pr-3">Mã HD</th>
                                                                 <th className="text-left py-2 pr-3">Phòng</th>
-                                                                <th className="text-left py-2 pr-3">Giờ vào</th>
                                                                 <th className="text-right py-2 pr-3">Tổng tiền</th>
                                                                 <th className="text-center py-2 pr-3">Trạng thái</th>
                                                                 <th className="text-right py-2">Thao tác</th>
@@ -678,9 +677,6 @@ export default function ReportsPage() {
                                                                     <td className="py-2 pr-3 font-bold text-slate-900">
                                                                         Phòng {(inv as any).roomNumber}
                                                                     </td>
-                                                                    <td className="py-2 pr-3 text-slate-500">
-                                                                        {new Date(inv.startTime).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
-                                                                    </td>
                                                                     <td className="py-2 pr-3 text-right font-bold text-slate-900">
                                                                         {fmtVND(inv.totalPrice)}đ
                                                                     </td>
@@ -688,11 +684,20 @@ export default function ReportsPage() {
                                                                         <StatusBadge status={inv.status} />
                                                                     </td>
                                                                     <td className="py-2 text-right">
-                                                                        <Link href={`/dashboard/invoice/${inv.id}`}>
-                                                                            <button className="px-3 py-1 rounded-lg border border-slate-200 bg-white text-blue-600 text-[11px] font-bold hover:bg-blue-50 hover:border-blue-200 transition-all">
-                                                                                Chi tiết
+                                                                        <div className="flex items-center justify-end gap-2">
+                                                                            <Link href={`/dashboard/invoice/${inv.id}`}>
+                                                                                <button className="px-3 py-1 rounded-lg border border-slate-200 bg-white text-blue-600 text-[11px] font-bold hover:bg-blue-50 hover:border-blue-200 transition-all">
+                                                                                    Chi tiết
+                                                                                </button>
+                                                                            </Link>
+                                                                            <button
+                                                                                onClick={() => handleDeleteInvoice(inv.id)}
+                                                                                className="p-1.5 rounded-lg border border-red-100 bg-white text-red-400 hover:bg-red-50 hover:border-red-200 transition-all"
+                                                                                title="Xoá hóa đơn"
+                                                                            >
+                                                                                <Trash2 className="w-3.5 h-3.5" />
                                                                             </button>
-                                                                        </Link>
+                                                                        </div>
                                                                     </td>
                                                                 </tr>
                                                             ))}
@@ -708,88 +713,6 @@ export default function ReportsPage() {
                     )}
                 </div>
 
-                {/* Invoice table */}
-                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-                    <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2">
-                            <h2 className="text-[13px] font-bold text-slate-800">
-                                Danh sách hóa đơn
-                                {selectedStore ? ` — ${selectedStore.name}` : ''}
-                            </h2>
-                            <span className="bg-slate-100 text-slate-600 text-[11px] font-bold px-2.5 py-0.5 rounded-full">
-                                {filteredInvoices.length}
-                            </span>
-                        </div>
-                    </div>
-
-                    {isLoading ? (
-                        <div className="py-12 text-center text-slate-400 text-[13px] italic">Đang tải...</div>
-                    ) : filteredInvoices.length === 0 ? (
-                        <div className="py-12 text-center text-slate-400 text-[13px] italic">Chưa có hóa đơn nào</div>
-                    ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full" style={{ tableLayout: 'fixed' }}>
-                                <colgroup>
-                                    <col style={{ width: '100px' }} />
-                                    <col style={{ width: '110px' }} />
-                                    <col style={{ width: '165px' }} />
-                                    <col style={{ width: '145px' }} />
-                                    <col style={{ width: '120px' }} />
-                                    <col style={{ width: '130px' }} />
-                                </colgroup>
-                                <thead className="bg-slate-50 border-b border-slate-100">
-                                    <tr>
-                                        {['Mã HD', 'Phòng', 'Thời gian', 'Tổng tiền', 'Trạng thái', 'Thao tác'].map(h => (
-                                            <th
-                                                key={h}
-                                                className="px-4 py-3 text-left text-[9px] font-extrabold text-slate-400 uppercase tracking-widest"
-                                            >
-                                                {h}
-                                            </th>
-                                        ))}
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {filteredInvoices.map((invoice, idx) => (
-                                        <tr key={invoice.id} className={`transition-colors ${idx % 2 === 0 ? 'hover:bg-blue-50/40' : 'bg-slate-50/50 hover:bg-blue-50/40'
-                                            }`}>
-                                            <td className="px-4 py-3 font-mono text-[11px] font-semibold text-slate-500">
-                                                #{invoice.id.slice(0, 6).toUpperCase()}
-                                            </td>
-                                            <td className="px-4 py-3 text-[13px] font-bold text-slate-900">
-                                                Phòng {(invoice as any).roomNumber}
-                                            </td>
-                                            <td className="px-4 py-3 text-[11px] text-slate-500">
-                                                {new Date(invoice.startTime).toLocaleString('vi-VN')}
-                                            </td>
-                                            <td className="px-4 py-3 text-[13px] font-bold text-slate-900">
-                                                {fmtVND(invoice.totalPrice)}đ
-                                            </td>
-                                            <td className="px-4 py-3">
-                                                <StatusBadge status={invoice.status} />
-                                            </td>
-                                            <td className="px-4 py-3">
-                                                <div className="flex items-center gap-2">
-                                                    <Link href={`/dashboard/invoice/${invoice.id}`}>
-                                                        <button className="px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 text-blue-600 text-[11px] font-bold hover:bg-blue-50 hover:border-blue-200 transition-all">
-                                                            Chi tiết
-                                                        </button>
-                                                    </Link>
-                                                    <button
-                                                        onClick={() => handleDeleteInvoice(invoice.id)}
-                                                        className="p-1.5 rounded-lg border border-red-100 bg-white text-red-400 hover:bg-red-50 hover:border-red-200 transition-all"
-                                                    >
-                                                        <Trash2 className="w-3.5 h-3.5" />
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-                </div>
             </main>
         </div>
     );
