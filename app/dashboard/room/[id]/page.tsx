@@ -1252,8 +1252,9 @@ export default function RoomPage() {
         localStorage.removeItem(`voucher_${sessionId}`); // Xóa voucher sau khi đã thanh toán
         const result = await res.json();
         const invoiceData = result.data || result;
-        toast.success('Tạo hóa đơn thành công');
-        router.push(`/dashboard/invoice/${invoiceData.id ?? invoiceData.Id}`);
+        toast.success('Thanh toán thành công');
+        // Sang trang hoá đơn ở chế độ tự in (không hiện preview)
+        router.push(`/dashboard/invoice/${invoiceData.id ?? invoiceData.Id}?print=true`);
       } else toast.error('Lỗi khi tạo hóa đơn');
     } catch (err) { console.error('Error generating invoice:', err); toast.error('Lỗi khi tạo hóa đơn'); }
   };
@@ -2737,16 +2738,16 @@ export default function RoomPage() {
       {session && (
         <div className="hidden print:block w-[80mm] mx-auto px-4 pt-2 pb-4 bg-white text-black font-bold"
           style={{
-            fontFamily: 'monospace',
-            WebkitFontSmoothing: 'none',
-            MozOsxFontSmoothing: 'unset',
-            textRendering: 'optimizeSpeed'
+            fontFamily: "Tahoma, 'Segoe UI', Arial, sans-serif",
+            WebkitFontSmoothing: 'antialiased',
+            MozOsxFontSmoothing: 'grayscale',
+            textRendering: 'geometricPrecision'
           }}>
           <style dangerouslySetInnerHTML={{
             __html: `
-            @media print { 
-              body { -webkit-print-color-adjust: exact; } 
-              * { color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; text-shadow: none !important; }
+            @media print {
+              body { -webkit-print-color-adjust: exact; font-family: Tahoma, 'Segoe UI', Arial, sans-serif; }
+              * { color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; text-shadow: none !important; font-family: inherit; }
               @page { margin: 0; size: 80mm auto; }
             }
           `
@@ -2780,8 +2781,10 @@ export default function RoomPage() {
                     {' '}({durationText})
                   </div>
                 </td>
-                <td className="text-center py-1.5">{(durationMinutes / 60).toFixed(2)}</td>
-                <td className="text-right py-1.5 font-black">{roomChargeTotal.toLocaleString('vi-VN', { maximumFractionDigits: 0 })}</td>
+                <td className="text-center py-1.5 whitespace-nowrap" style={{ paddingLeft: 6, paddingRight: 8 }}>
+                  {Math.floor(durationMinutes / 60)}h{String(durationMinutes % 60).padStart(2, '0')}
+                </td>
+                <td className="text-right py-1.5 font-black" style={{ paddingLeft: 8 }}>{roomChargeTotal.toLocaleString('vi-VN', { maximumFractionDigits: 0 })}</td>
               </tr>
               {/* Các món */}
               {orderItems.map((item, index) => (
@@ -2791,8 +2794,8 @@ export default function RoomPage() {
                     {localItemNotes[item.productId] && <div className="text-[12px] font-normal italic text-black">Ghi chú: {localItemNotes[item.productId]}</div>}
                     <div className="text-[11px] font-normal text-black">Giá: {item.price.toLocaleString('vi-VN')}</div>
                   </td>
-                  <td className="text-center py-1.5">{item.quantity}</td>
-                  <td className="text-right py-1.5 font-black">{(item.price * item.quantity).toLocaleString('vi-VN', { maximumFractionDigits: 0 })}</td>
+                  <td className="text-center py-1.5 whitespace-nowrap" style={{ paddingLeft: 6, paddingRight: 8 }}>{item.quantity}</td>
+                  <td className="text-right py-1.5 font-black" style={{ paddingLeft: 8 }}>{(item.price * item.quantity).toLocaleString('vi-VN', { maximumFractionDigits: 0 })}</td>
                 </tr>
               ))}
             </tbody>

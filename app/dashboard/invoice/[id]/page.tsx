@@ -5,9 +5,8 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import Link from 'next/link';
-import { ArrowLeft, Printer, Check } from 'lucide-react';
+import { ArrowLeft, Printer } from 'lucide-react';
 import { Invoice, Room, Store } from '@/lib/db';
-import { toast } from 'sonner';
 
 export default function InvoicePage() {
   const params = useParams();
@@ -15,6 +14,7 @@ export default function InvoicePage() {
   const searchParams = useSearchParams();
   const invoiceId = params.id as string;
   const shouldAutoPrint = searchParams.get('print') === 'true';
+  const printOnly = shouldAutoPrint; // Khi đến từ luồng thanh toán: chỉ hiện phần in, tự in, tự về dashboard
 
   const [invoice, setInvoice] = useState<Invoice | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
@@ -75,29 +75,13 @@ export default function InvoicePage() {
     }
   };
 
-  const handleCompleteRoom = async () => {
-    if (!invoice) return;
-    try {
-      const response = await fetch('/api/rooms/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          roomId: String(invoice.roomId),
-          invoiceId: String(invoice.id),
-        }),
-      });
-      if (response.ok) {
-        toast.success('Thanh toán hoàn tất');
-        router.refresh();
-        router.push('/dashboard');
-      } else {
-        toast.error('Có lỗi xảy ra khi hoàn tất phòng');
-      }
-    } catch (error) {
-      console.error('Error completing room:', error);
-      toast.error('Lỗi kết nối máy chủ');
-    }
-  };
+  // Khi đến từ luồng thanh toán (?print=true): tự về dashboard sau khi in xong/đóng hộp thoại in
+  useEffect(() => {
+    if (!printOnly) return;
+    const onAfterPrint = () => router.push('/dashboard');
+    window.addEventListener('afterprint', onAfterPrint);
+    return () => window.removeEventListener('afterprint', onAfterPrint);
+  }, [printOnly, router]);
 
   // ── Tính toán ──────────────────────────────────────────────────────────────
   const durationMinutes = invoice
@@ -141,11 +125,10 @@ export default function InvoicePage() {
       <div className="bg-white border-b border-slate-300 sticky top-0 z-40 print:hidden">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between">
           <div className="flex items-center gap-2 sm:gap-3">
-            {/* ← THÊM NÚT QUAY LẠI */}
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => router.back()}
+              onClick={() => router.push('/dashboard')}
               className="text-slate-600 hover:text-slate-900 gap-1 px-1 sm:px-2"
             >
               <ArrowLeft className="w-4 h-4" />
@@ -158,14 +141,11 @@ export default function InvoicePage() {
               <Printer className="w-4 h-4" />
               <span className="hidden sm:inline">In hóa đơn</span>
             </Button>
-            <Button onClick={handleCompleteRoom} size="sm" className="bg-green-600 hover:bg-green-700 text-white gap-1 px-2 sm:px-4">
-              <Check className="w-4 h-4" />
-              <span className="hidden sm:inline">Hoàn tất</span>
-            </Button>
           </div>
         </div>
       </div>
-      {/* ── Xem trước trên màn hình (ẩn khi in) ── */}
+      {/* ── Xem trước trên màn hình (ẩn khi in, ẩn luôn nếu vào từ luồng thanh toán) ── */}
+      {!printOnly && (
       <div className="max-w-4xl mx-auto px-3 sm:px-6 py-4 sm:py-8 print:hidden">
         <Card className="bg-white sm:bg-slate-100 border-none sm:border-slate-300 p-4 sm:p-8 shadow-sm sm:shadow-none rounded-2xl sm:rounded-3xl">
           <div className="text-center mb-6 sm:mb-8 pb-4 sm:pb-6 border-b border-slate-200 sm:border-slate-300">
@@ -251,20 +231,38 @@ export default function InvoicePage() {
           </div>
         </Card>
       </div>
+      )}
+
+      {/* Thông báo gọn khi vào từ luồng thanh toán */}
+      {printOnly && (
+        <div className="max-w-md mx-auto px-4 py-12 text-center print:hidden">
+          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6">
+            <p className="text-emerald-700 font-bold text-base">Thanh toán thành công</p>
+            <p className="text-slate-500 text-sm mt-1">Đang mở hộp thoại in hoá đơn...</p>
+            <Button
+              onClick={() => router.push('/dashboard')}
+              className="mt-4 bg-slate-900 hover:bg-slate-800 text-white"
+              size="sm"
+            >
+              Về trang chủ
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* ── Template in 80mm (chỉ hiện khi in) ── */}
       <div className="hidden print:block w-[80mm] mx-auto px-4 pt-2 pb-4 bg-white text-black font-bold"
         style={{
-          fontFamily: 'monospace',
-          WebkitFontSmoothing: 'none',
-          MozOsxFontSmoothing: 'unset',
-          textRendering: 'optimizeSpeed'
+          fontFamily: "Tahoma, 'Segoe UI', Arial, sans-serif",
+          WebkitFontSmoothing: 'antialiased',
+          MozOsxFontSmoothing: 'grayscale',
+          textRendering: 'geometricPrecision'
         }}>
         <style dangerouslySetInnerHTML={{
           __html: `
-          @media print { 
-            body { -webkit-print-color-adjust: exact; } 
-            * { color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; text-shadow: none !important; }
+          @media print {
+            body { -webkit-print-color-adjust: exact; font-family: Tahoma, 'Segoe UI', Arial, sans-serif; }
+            * { color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; text-shadow: none !important; font-family: inherit; }
             @page { margin: 0; size: 80mm auto; }
           }
         ` }} />
@@ -302,8 +300,10 @@ export default function InvoicePage() {
                   {' '}({durationText})
                 </div>
               </td>
-              <td className="text-center py-1.5">{(durationMinutes / 60).toFixed(2)}</td>
-              <td className="text-right py-1.5 font-black">
+              <td className="text-center py-1.5 whitespace-nowrap" style={{ paddingLeft: 6, paddingRight: 8 }}>
+                {Math.floor(durationMinutes / 60)}h{String(durationMinutes % 60).padStart(2, '0')}
+              </td>
+              <td className="text-right py-1.5 font-black" style={{ paddingLeft: 8 }}>
                 {invoice.roomCost.toLocaleString('vi-VN', { maximumFractionDigits: 0 })}
               </td>
             </tr>
@@ -317,8 +317,8 @@ export default function InvoicePage() {
                     Giá: {item.price.toLocaleString('vi-VN')}
                   </div>
                 </td>
-                <td className="text-center py-1.5">{item.quantity}</td>
-                <td className="text-right py-1.5 font-black">
+                <td className="text-center py-1.5 whitespace-nowrap" style={{ paddingLeft: 6, paddingRight: 8 }}>{item.quantity}</td>
+                <td className="text-right py-1.5 font-black" style={{ paddingLeft: 8 }}>
                   {(item.price * item.quantity).toLocaleString('vi-VN', { maximumFractionDigits: 0 })}
                 </td>
               </tr>

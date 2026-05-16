@@ -57,50 +57,80 @@ export async function GET(req: NextRequest) {
         });
 
         /* ───────────────────────────────────────────── */
-        /* 3. PAID INVOICES & SESSIONS                  */
+        /* 3. SALES FROM PAID INVOICES ONLY             */
         /* ───────────────────────────────────────────── */
 
-        // Lấy danh sách ID các phiên phòng trong kỳ (không tính các phòng bị hủy)
+        // Tìm các phiên phòng BẮT ĐẦU trong kỳ và ĐÃ THANH TOÁN (có hóa đơn)
+        // Sử dụng StartTime thay vì CreatedAt của Invoice
         const sessionsInPeriod = await prisma.roomSession.findMany({
             where: {
                 StoreId: storeId,
-                Status: { not: 'cancelled' },
                 StartTime: { gte: startDate, lte: endDate },
+                // Chỉ tính những phòng đã chốt (tránh tính nhầm hàng đang dùng trong phòng chưa thanh toán vào báo cáo doanh thu/bán chạy)
+                OR: [
+                    { Status: 'completed' },
+                    { Invoice: { Status: 'paid' } }
+                ]
             },
-            select: { Id: true },
+            select: { Id: true, RoomId: true, StartTime: true },
         });
         const sessionIdsInPeriod = sessionsInPeriod.map(s => s.Id);
+        const inRoomSessionIdsInPeriod = sessionsInPeriod.filter(s => s.RoomId !== 'EXTERNAL').map(s => s.Id);
+        const takeawaySessionIdsInPeriod = sessionsInPeriod.filter(s => s.RoomId === 'EXTERNAL').map(s => s.Id);
 
-        // Lấy danh sách ID các phiên phòng từ lúc bắt đầu xem báo cáo đến hiện tại
+        // Map sessionId -> startTime (để dựng breakdown theo ngày)
+        const sessionTimeMap = new Map<string, Date>();
+        const sessionRoomMap = new Map<string, string>();
+        sessionsInPeriod.forEach(s => {
+            sessionTimeMap.set(s.Id, s.StartTime as any);
+            sessionRoomMap.set(s.Id, s.RoomId);
+        });
+
+        // Tương tự cho mốc tính tồn đầu
         const sessionsSinceStart = await prisma.roomSession.findMany({
             where: {
                 StoreId: storeId,
-                Status: { not: 'cancelled' },
                 StartTime: { gte: startDate },
+                OR: [
+                    { Status: 'completed' },
+                    { Invoice: { Status: 'paid' } }
+                ]
             },
             select: { Id: true },
         });
         const sessionIdsSinceStart = sessionsSinceStart.map(s => s.Id);
 
-        /* ───────────────────────────────────────────── */
-        /* 4. SALES (ONLY FROM PAID BILLS)              */
-        /* ───────────────────────────────────────────── */
+        // Bán trong phòng (không tính EXTERNAL = mang về)
+        const inRoomSalesInPeriod = await prisma.orderItem.groupBy({
+            by: ['ProductId'],
+            where: { RoomSessionId: { in: inRoomSessionIdsInPeriod } },
+            _sum: { Quantity: true },
+        });
 
-        // Bán trong kỳ: Toàn bộ món trong các bill đã thanh toán thành công trong kỳ này
-        const salesInPeriod = sessionIdsInPeriod.length > 0
-            ? await prisma.orderItem.groupBy({
-                by: ['ProductId'],
-                where: { RoomSessionId: { in: sessionIdsInPeriod } },
-                _sum: { Quantity: true },
-            }) : [];
+        // Mang về/Tặng (RoomId='EXTERNAL')
+        const takeawaySalesInPeriod = await prisma.orderItem.groupBy({
+            by: ['ProductId'],
+            where: { RoomSessionId: { in: takeawaySessionIdsInPeriod } },
+            _sum: { Quantity: true },
+        });
 
-        // Bán từ lúc bắt đầu xem báo cáo đến nay (để phục vụ tính tồn đầu chính xác)
-        const salesSinceStart = sessionIdsSinceStart.length > 0
-            ? await prisma.orderItem.groupBy({
-                by: ['ProductId'],
-                where: { RoomSessionId: { in: sessionIdsSinceStart } },
-                _sum: { Quantity: true },
-            }) : [];
+        // Bán từ mốc xem báo cáo đến hiện tại (giữ nguyên để tính tồn đầu)
+        const salesSinceStart = await prisma.orderItem.groupBy({
+            by: ['ProductId'],
+            where: { RoomSessionId: { in: sessionIdsSinceStart } },
+            _sum: { Quantity: true },
+        });
+
+        // Chi tiết từng OrderItem trong kỳ (để dựng breakdown theo ngày × sản phẩm)
+        const orderItemsInPeriod = await prisma.orderItem.findMany({
+            where: { RoomSessionId: { in: sessionIdsInPeriod } },
+            select: {
+                ProductId: true,
+                Quantity: true,
+                Price: true,
+                RoomSessionId: true,
+            },
+        });
 
         /* ───────────────────────────────────────────── */
         /* 5. INVENTORY LOG                             */
@@ -124,6 +154,8 @@ export async function GET(req: NextRequest) {
                 StoreId: storeId,
                 CreatedAt: { gte: startDate, lte: endDate },
                 Quantity: { lt: 0 },
+                // Không tính các log mang về/tặng vì đã tính ở mục Sales (OrderItem)
+                Type: { notIn: ['export', 'gift'] }
             },
             _sum: { Quantity: true },
         });
@@ -148,6 +180,7 @@ export async function GET(req: NextRequest) {
                 StoreId: storeId,
                 CreatedAt: { gte: startDate },
                 Quantity: { lt: 0 },
+                Type: { notIn: ['export', 'gift'] }
             },
             _sum: { Quantity: true },
         });
@@ -172,15 +205,23 @@ export async function GET(req: NextRequest) {
         const safe = (n: any) => Number(n || 0);
 
         const stats = products.map(p => {
-            // Bán trong kỳ
-            const salePeriod = salesInPeriod.find((s: any) => s.ProductId === p.Id);
-            const roomSales = safe(salePeriod?._sum?.Quantity);
+            // Bán trong phòng (không tính mang về)
+            const inRoomRec = inRoomSalesInPeriod.find((s: any) => s.ProductId === p.Id);
+            const inRoomSold = safe(inRoomRec?._sum?.Quantity);
 
-            // Xuất lẻ trong kỳ
+            // Mang về (RoomId=EXTERNAL)
+            const takeawayRec = takeawaySalesInPeriod.find((s: any) => s.ProductId === p.Id);
+            const takeawayQty = safe(takeawayRec?._sum?.Quantity);
+
+            // Hư hỏng / xuất lẻ khác (InventoryLog, không phải export/gift để tránh trùng)
             const exportPeriod = exportsInPeriod.find((e: any) => e.ProductId === p.Id);
-            const exported = Math.abs(safe(exportPeriod?._sum?.Quantity));
+            const damageQty = Math.abs(safe(exportPeriod?._sum?.Quantity));
 
-            const totalQuantity = roomSales + exported;
+            // Tổng "xuất khác": mang về + hư hỏng (Mang về đã bao gồm Tặng vì cả 2 đều dùng EXTERNAL)
+            const otherExports = takeawayQty + damageQty;
+
+            // Tổng số lượng giảm trong kỳ
+            const totalDecrement = inRoomSold + otherExports;
 
             // Nhập trong kỳ
             const restockPeriod = restocksInPeriod.find((r: any) => r.ProductId === p.Id);
@@ -202,8 +243,14 @@ export async function GET(req: NextRequest) {
                 + totalExportedSinceStart
                 + totalSoldSinceStart;
 
-            // Tồn cuối kỳ = Tồn đầu + Nhập trong kỳ - (Bán + Xuất lẻ trong kỳ)
-            const closingStock = openingStock + totalRestocked - totalQuantity;
+            // Tổng (Tạo + Nhập) = Tồn đầu kỳ + Nhập trong kỳ
+            const totalCreatedAndImported = Math.max(0, openingStock) + totalRestocked;
+
+            // Số lượng còn lại = Tổng - Bán trong phòng - Xuất khác
+            const closingStock = totalCreatedAndImported - totalDecrement;
+
+            // Doanh thu trong kỳ = (Bán phòng + Mang về) × giá; hư hỏng không tính doanh thu
+            const revenueQty = inRoomSold + takeawayQty;
 
             return {
                 productId: p.Id,
@@ -211,13 +258,65 @@ export async function GET(req: NextRequest) {
                 category: p.Category,
                 openingStock: Math.max(0, openingStock),
                 totalRestocked,
-                totalSold: roomSales,
-                totalExported: exported,
-                totalQuantity,
-                totalRevenue: totalQuantity * Number(p.Price || 0),
-                currentStock: p.Quantity, // Đây là số 330 thực tế trong DB
-                closingStock: closingStock, // Đây sẽ là số 378 cho ngày 1/5
+                totalCreatedAndImported,
+                totalSold: inRoomSold,
+                totalTakeaway: takeawayQty,
+                totalDamage: damageQty,
+                totalExported: otherExports,
+                totalDecrement,
+                totalRevenue: revenueQty * Number(p.Price || 0),
+                currentStock: p.Quantity,
+                closingStock: closingStock,
             };
+        });
+
+        /* ───────────────────────────────────────────── */
+        /* 7b. DAILY BREAKDOWN (Sản lượng bán theo ngày) */
+        /* ───────────────────────────────────────────── */
+
+        const productMap = new Map(products.map(p => [p.Id, p] as const));
+        type DayKey = string;
+        const breakdownMap = new Map<string, {
+            day: DayKey;
+            productId: string;
+            productName: string;
+            category: string;
+            inRoom: number;
+            takeaway: number;
+            revenue: number;
+        }>();
+
+        for (const oi of orderItemsInPeriod) {
+            const startTime = sessionTimeMap.get(oi.RoomSessionId);
+            if (!startTime) continue;
+            const d = new Date(startTime);
+            const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            const isTakeaway = sessionRoomMap.get(oi.RoomSessionId) === 'EXTERNAL';
+            const product = productMap.get(oi.ProductId);
+            if (!product) continue;
+            const key = `${day}__${oi.ProductId}`;
+            let entry = breakdownMap.get(key);
+            if (!entry) {
+                entry = {
+                    day,
+                    productId: oi.ProductId,
+                    productName: product.Name,
+                    category: product.Category,
+                    inRoom: 0,
+                    takeaway: 0,
+                    revenue: 0,
+                };
+                breakdownMap.set(key, entry);
+            }
+            const qty = Number(oi.Quantity || 0);
+            if (isTakeaway) entry.takeaway += qty;
+            else entry.inRoom += qty;
+            entry.revenue += qty * Number(oi.Price || 0);
+        }
+
+        const dailyBreakdown = Array.from(breakdownMap.values()).sort((a, b) => {
+            if (a.day !== b.day) return a.day < b.day ? 1 : -1;
+            return a.productName.localeCompare(b.productName, 'vi');
         });
 
         /* ───────────────────────────────────────────── */
@@ -226,6 +325,7 @@ export async function GET(req: NextRequest) {
 
         return NextResponse.json({
             stats,
+            dailyBreakdown,
             logs: logs.map((l: any) => ({
                 id: l.Id,
                 productName: l.product?.Name || 'Sản phẩm đã xóa',

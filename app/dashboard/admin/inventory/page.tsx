@@ -31,12 +31,25 @@ interface ProductStat {
     category: string;
     openingStock: number;
     totalRestocked: number;
-    totalSold: number;
-    totalExported: number;
-    totalQuantity: number;
+    totalCreatedAndImported: number;
+    totalSold: number;        // Bán trong phòng (không gồm mang về)
+    totalTakeaway: number;    // Mang về + Tặng
+    totalDamage: number;      // Hư hỏng
+    totalExported: number;    // = totalTakeaway + totalDamage (xuất khác)
+    totalDecrement: number;
     totalRevenue: number;
     currentStock: number;
     closingStock: number;
+}
+
+interface DailyBreakdownRow {
+    day: string; // YYYY-MM-DD
+    productId: string;
+    productName: string;
+    category: string;
+    inRoom: number;
+    takeaway: number;
+    revenue: number;
 }
 
 interface InventoryLog {
@@ -60,13 +73,20 @@ const CAT_LABELS: Record<string, string> = {
 const CHART_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#3b82f6'];
 
 const PERIOD_OPTIONS = [
-    { id: 'daily', label: 'Ngày' },
     { id: 'weekly', label: 'Tuần' },
     { id: 'monthly', label: 'Tháng' },
     { id: 'yearly', label: 'Năm' },
 ] as const;
 
 type PeriodType = typeof PERIOD_OPTIONS[number]['id'];
+
+const VI_WEEKDAY = ['Chủ nhật', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7'];
+
+function formatDayLabel(yyyyMmDd: string) {
+    const [y, m, d] = yyyyMmDd.split('-').map(Number);
+    const date = new Date(y, m - 1, d);
+    return `${VI_WEEKDAY[date.getDay()]}, ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y}`;
+}
 
 /* ─── Sub-components ─────────────────────────────────────────── */
 
@@ -158,8 +178,9 @@ export default function InventoryStatsPage() {
     const { user } = useAuth();
     const [stores, setStores] = useState<Store[]>([]);
     const [selectedStoreId, setSelectedStoreId] = useState<string>('');
-    const [reportType, setReportType] = useState<PeriodType>('daily');
+    const [reportType, setReportType] = useState<PeriodType>('weekly');
     const [stats, setStats] = useState<ProductStat[]>([]);
+    const [dailyBreakdown, setDailyBreakdown] = useState<DailyBreakdownRow[]>([]);
     const [logs, setLogs] = useState<InventoryLog[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [startDate, setStartDate] = useState('');
@@ -207,9 +228,11 @@ export default function InventoryStatsPage() {
                 const data = await res.json();
                 setStats(Array.isArray(data.stats) ? data.stats : []);
                 setLogs(Array.isArray(data.logs) ? data.logs : []);
+                setDailyBreakdown(Array.isArray(data.dailyBreakdown) ? data.dailyBreakdown : []);
             } else {
                 setStats([]);
                 setLogs([]);
+                setDailyBreakdown([]);
             }
         } catch {
             toast.error('Lỗi khi tải dữ liệu thống kê kho');
@@ -221,12 +244,12 @@ export default function InventoryStatsPage() {
     /* ── Derived data ─── */
 
     const bestSellers = useMemo(
-        () => [...stats].sort((a, b) => b.totalQuantity - a.totalQuantity).slice(0, 5),
+        () => [...stats].sort((a, b) => b.totalSold - a.totalSold).slice(0, 5), // Sử dụng totalSold cho bán chạy nhất
         [stats]
     );
 
     const slowMoving = useMemo(
-        () => [...stats].sort((a, b) => a.totalQuantity - b.totalQuantity).slice(0, 5),
+        () => [...stats].sort((a, b) => a.totalSold - b.totalSold).slice(0, 5), // Sử dụng totalSold cho bán chậm nhất
         [stats]
     );
 
@@ -238,7 +261,7 @@ export default function InventoryStatsPage() {
     const categoryData = useMemo(() => {
         const groups: Record<string, number> = {};
         stats.forEach(s => {
-            groups[s.category] = (groups[s.category] || 0) + s.totalQuantity;
+            groups[s.category] = (groups[s.category] || 0) + s.totalSold; // Sử dụng totalSold cho thống kê theo danh mục
         });
         return Object.entries(groups).map(([key, value]) => ({
             name: CAT_LABELS[key] ?? 'Khác',
@@ -256,6 +279,11 @@ export default function InventoryStatsPage() {
         [logs, searchTerm]
     );
 
+    const filteredBreakdown = useMemo(
+        () => dailyBreakdown.filter(r => r.productName.toLowerCase().includes(searchTerm.toLowerCase())),
+        [dailyBreakdown, searchTerm]
+    );
+
     /* ── CSV export ─── */
     const exportToCSV = () => {
         const isHistory = activeTab === 'history';
@@ -264,7 +292,7 @@ export default function InventoryStatsPage() {
 
         const headers = isHistory
             ? ['Ngày nhập', 'Sản phẩm', 'Biến động', 'Ghi chú', 'Trạng thái']
-            : ['Sản phẩm', 'Loại', 'Tồn đầu', 'Đã nhập', 'Đã bán', 'Doanh thu', 'Tồn hiện tại'];
+            : ['Sản phẩm', 'Loại', 'Số lượng tổng (Tạo + Nhập)', 'Bán trong phòng', 'Xuất khác (Phòng mang về)', 'Doanh thu', 'Số lượng còn lại'];
 
         const rows = isHistory
             ? logs.map(l => [
@@ -277,11 +305,11 @@ export default function InventoryStatsPage() {
             : stats.map(s => [
                 s.productName,
                 CAT_LABELS[s.category] ?? s.category,
-                s.openingStock,
-                s.totalRestocked,
-                s.totalQuantity,
+                s.totalCreatedAndImported,
+                s.totalSold,
+                s.totalExported,
                 s.totalRevenue,
-                s.currentStock,
+                s.closingStock,
             ]);
 
         const csv = '\ufeff' + [headers, ...rows].map(r => r.join(',')).join('\n');
@@ -437,16 +465,16 @@ export default function InventoryStatsPage() {
                         iconBg="bg-blue-50"
                         icon={<TrendingUp className="w-5 h-5 text-blue-500" />}
                         label="Bán chạy nhất"
-                        value={bestSellers[0]?.productName ?? '---'}
-                        sub={`Số lượng: ${bestSellers[0]?.totalQuantity ?? 0}`}
+                        value={bestSellers[0]?.productName || '---'}
+                        sub={`Số lượng: ${bestSellers[0]?.totalSold ?? 0}`}
                         subColor="text-blue-500"
                     />
                     <KpiCard
                         iconBg="bg-rose-50"
                         icon={<TrendingDown className="w-5 h-5 text-rose-500" />}
                         label="Bán chậm nhất"
-                        value={slowMoving[0]?.productName ?? '---'}
-                        sub={`Số lượng: ${slowMoving[0]?.totalQuantity ?? 0}`}
+                        value={slowMoving[0]?.productName || '---'}
+                        sub={`Số lượng: ${slowMoving[0]?.totalSold ?? 0}`}
                         subColor="text-rose-500"
                     />
                     <KpiCard
@@ -472,7 +500,7 @@ export default function InventoryStatsPage() {
                             <div className="h-[240px]">
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart data={bestSellers} layout="vertical">
-                                        <CartesianGrid strokeDasharray="3 3" horizontal vertical={false} stroke="#f3f4f6" />
+                                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f3f4f6" />
                                         <XAxis type="number" hide />
                                         <YAxis
                                             dataKey="productName"
@@ -482,9 +510,9 @@ export default function InventoryStatsPage() {
                                             width={110}
                                             tick={{ fontSize: 11, fontWeight: 600, fill: '#374151' }}
                                             tickFormatter={v => v.length > 14 ? v.slice(0, 14) + '…' : v}
-                                        />
+                                        /> {/* Đã bỏ vertical={false} vì là mặc định cho biểu đồ dọc */}
                                         <Tooltip content={<CustomBarTooltip />} cursor={{ fill: '#f9fafb' }} />
-                                        <Bar dataKey="totalQuantity" fill="#10b981" radius={[0, 6, 6, 0]} barSize={22} />
+                                        <Bar dataKey="totalSold" fill="#10b981" radius={[0, 6, 6, 0]} barSize={22} /> {/* Sử dụng totalSold */}
                                     </BarChart>
                                 </ResponsiveContainer>
                             </div>
@@ -549,13 +577,20 @@ export default function InventoryStatsPage() {
                             <table className="w-full">
                                 <thead className="bg-slate-50 border-b border-slate-100">
                                     <tr>
-                                        {['Sản phẩm', 'Loại', 'Tồn đầu', `Nhập (${reportType})`, `Bán (${reportType})`, `Xuất (${reportType})`, 'Doanh thu', 'Tồn cuối kỳ'].map((h, i) => (
+                                        {[
+                                            { label: 'Sản phẩm', align: 'text-left' },
+                                            { label: 'Loại', align: 'text-left' },
+                                            { label: 'Số lượng tổng (tạo + nhập)', align: 'text-center' },
+                                            { label: 'Bán trong phòng', align: 'text-center' },
+                                            { label: 'Xuất khác (phòng mang về)', align: 'text-center' },
+                                            { label: 'Doanh thu', align: 'text-right' },
+                                            { label: 'Số lượng còn lại', align: 'text-center' },
+                                        ].map(h => (
                                             <th
-                                                key={h}
-                                                className={`px-5 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider
-                                                    ${i >= 2 && i <= 5 ? 'text-center' : i === 6 ? 'text-right' : i === 7 ? 'text-center' : 'text-left'}`}
+                                                key={h.label}
+                                                className={`px-5 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider ${h.align}`}
                                             >
-                                                {h}
+                                                {h.label}
                                             </th>
                                         ))}
                                     </tr>
@@ -563,13 +598,13 @@ export default function InventoryStatsPage() {
                                 <tbody className="divide-y divide-slate-50">
                                     {isLoading ? (
                                         <tr>
-                                            <td colSpan={8} className="px-5 py-10 text-center text-slate-400 text-sm italic">
+                                            <td colSpan={7} className="px-5 py-10 text-center text-slate-400 text-sm italic">
                                                 Đang tải dữ liệu...
                                             </td>
                                         </tr>
                                     ) : filteredStats.length === 0 ? (
                                         <tr>
-                                            <td colSpan={8} className="px-5 py-10 text-center text-slate-400 text-sm italic">
+                                            <td colSpan={7} className="px-5 py-10 text-center text-slate-400 text-sm italic">
                                                 Không có dữ liệu thống kê cho giai đoạn này
                                             </td>
                                         </tr>
@@ -579,8 +614,7 @@ export default function InventoryStatsPage() {
                                             <td className="px-5 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                                                 {CAT_LABELS[item.category] ?? item.category}
                                             </td>
-                                            <td className="px-5 py-3 text-[13px] text-center font-semibold text-slate-600">{item.openingStock}</td>
-                                            <td className="px-5 py-3 text-[13px] text-center font-bold text-blue-600">+{item.totalRestocked}</td>
+                                            <td className="px-5 py-3 text-[13px] text-center font-bold text-blue-600">{item.totalCreatedAndImported}</td>
                                             <td className="px-5 py-3 text-[13px] text-center font-bold text-emerald-600">{item.totalSold}</td>
                                             <td className="px-5 py-3 text-[13px] text-center font-bold text-orange-500">{item.totalExported}</td>
                                             <td className="px-5 py-3 text-[13px] text-right font-semibold text-slate-700">
@@ -642,6 +676,75 @@ export default function InventoryStatsPage() {
                         )}
                     </div>
                 </div>
+
+                {/* Daily breakdown table — only on sales tab */}
+                {activeTab === 'sales' && (
+                    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+                        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-4">
+                            <h2 className="text-[13px] font-bold text-slate-800 flex items-center gap-2">
+                                <Calendar className="w-4 h-4 text-indigo-500" />
+                                Sản lượng bán theo ngày
+                                <span className="text-[11px] font-medium text-slate-400 ml-1">(hóa đơn đã thanh toán)</span>
+                            </h2>
+                            <span className="text-[11px] font-semibold text-slate-400">
+                                {filteredBreakdown.length} dòng
+                            </span>
+                        </div>
+                        <div className="overflow-x-auto max-h-[480px] overflow-y-auto">
+                            <table className="w-full">
+                                <thead className="bg-slate-50 border-b border-slate-100 sticky top-0">
+                                    <tr>
+                                        {[
+                                            { label: 'Ngày', align: 'text-left' },
+                                            { label: 'Sản phẩm', align: 'text-left' },
+                                            { label: 'Loại', align: 'text-left' },
+                                            { label: 'Bán phòng', align: 'text-center' },
+                                            { label: 'Mang về', align: 'text-center' },
+                                            { label: 'Tổng', align: 'text-center' },
+                                            { label: 'Doanh thu', align: 'text-right' },
+                                        ].map(h => (
+                                            <th
+                                                key={h.label}
+                                                className={`px-5 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider ${h.align}`}
+                                            >
+                                                {h.label}
+                                            </th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-50">
+                                    {isLoading ? (
+                                        <tr>
+                                            <td colSpan={7} className="px-5 py-10 text-center text-slate-400 text-sm italic">
+                                                Đang tải dữ liệu...
+                                            </td>
+                                        </tr>
+                                    ) : filteredBreakdown.length === 0 ? (
+                                        <tr>
+                                            <td colSpan={7} className="px-5 py-10 text-center text-slate-400 text-sm italic">
+                                                Chưa có dữ liệu bán theo ngày cho kỳ này
+                                            </td>
+                                        </tr>
+                                    ) : filteredBreakdown.map(row => (
+                                        <tr key={`${row.day}-${row.productId}`} className="hover:bg-slate-50/60 transition-colors">
+                                            <td className="px-5 py-3 text-[12px] text-slate-600 font-medium">{formatDayLabel(row.day)}</td>
+                                            <td className="px-5 py-3 text-[13px] font-bold text-slate-900">{row.productName}</td>
+                                            <td className="px-5 py-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                                                {CAT_LABELS[row.category] ?? row.category}
+                                            </td>
+                                            <td className="px-5 py-3 text-[13px] text-center font-bold text-emerald-600">{row.inRoom}</td>
+                                            <td className="px-5 py-3 text-[13px] text-center font-bold text-orange-500">{row.takeaway}</td>
+                                            <td className="px-5 py-3 text-[13px] text-center font-extrabold text-slate-900">{row.inRoom + row.takeaway}</td>
+                                            <td className="px-5 py-3 text-[13px] text-right font-semibold text-slate-700">
+                                                {row.revenue.toLocaleString('vi-VN')}đ
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                )}
             </main>
 
             {/* ── Low-stock warning modal ── */}

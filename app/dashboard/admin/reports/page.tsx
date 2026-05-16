@@ -15,7 +15,7 @@ import {
 import {
     TrendingUp, Receipt, LayoutDashboard, MonitorPlay, Trash2,
     Calendar, Search, Download, X, ArrowLeft, FileText,
-    CheckCircle,
+    CheckCircle, ChevronDown, ChevronRight,
 } from 'lucide-react';
 
 /* ─── Types ─────────────────────────────────────────────────── */
@@ -32,8 +32,27 @@ const PERIOD_OPTIONS: { id: PeriodType; label: string }[] = [
     { id: 'yearly', label: 'Năm' },
 ];
 
+/**
+ * Quy ước "ngày làm việc": 06:00 → 05:59 hôm sau.
+ * Cách dịch: trừ 6 giờ rồi lấy phần date → giờ 0h-5h59 sẽ rơi về ngày hôm trước.
+ */
+const BUSINESS_DAY_CUTOFF_HOURS = 6;
+function getBusinessDate(date: Date): Date {
+    const shifted = new Date(date.getTime() - BUSINESS_DAY_CUTOFF_HOURS * 3600 * 1000);
+    return new Date(shifted.getFullYear(), shifted.getMonth(), shifted.getDate());
+}
+function getBusinessDayKey(date: Date): string {
+    const d = getBusinessDate(date);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+const VI_WEEKDAYS = ['Chủ Nhật', 'Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy'];
+
 function getGroupKey(date: Date, period: PeriodType): string {
-    if (period === 'daily') return date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
+    if (period === 'daily') {
+        const bd = getBusinessDate(date);
+        return bd.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' });
+    }
     if (period === 'weekly') {
         const oneJan = new Date(date.getFullYear(), 0, 1);
         const week = Math.ceil((Math.floor((date.getTime() - oneJan.getTime()) / 864e5) + oneJan.getDay() + 1) / 7);
@@ -112,6 +131,7 @@ export default function ReportsPage() {
     const [startDate, setStartDate] = useState('');
     const [endDate, setEndDate] = useState('');
     const [searchTerm, setSearchTerm] = useState('');
+    const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({});
 
     /* ── Fetch ─── */
     useEffect(() => {
@@ -224,7 +244,7 @@ export default function ReportsPage() {
             const id = (inv.id ?? '').toLowerCase();
             if (searchTerm && !id.includes(searchTerm.toLowerCase())) return false;
 
-            const d = new Date(inv.createdAt);
+            const d = new Date(inv.startTime); // Sử dụng Giờ vào
             if (startDate) {
                 const s = new Date(startDate);
                 s.setHours(0, 0, 0, 0);
@@ -243,7 +263,7 @@ export default function ReportsPage() {
         const groups: Record<string, { total: number; count: number }> = {};
         filteredInvoices.forEach(inv => {
             if (inv.status !== 'paid') return;
-            const key = getGroupKey(new Date(inv.createdAt), reportType);
+            const key = getGroupKey(new Date(inv.startTime), reportType); // Nhóm theo Giờ vào
             if (!groups[key]) groups[key] = { total: 0, count: 0 };
             groups[key].total += inv.totalPrice;
             // Chỉ tính lượt thuê cho các phòng thực tế (không phải mang về/tặng)
@@ -271,6 +291,43 @@ export default function ReportsPage() {
     const selectedStore = stores.find(s => s.id === selectedStoreId);
     const hasActiveFilters = !!(startDate || endDate || searchTerm);
 
+    /* ── Gom hoá đơn theo "ngày làm việc" (06h → 06h hôm sau) ─── */
+    const businessDays = useMemo(() => {
+        const map = new Map<string, {
+            key: string;
+            date: Date;            // Ngày làm việc (00:00 ngày đó)
+            invoices: Invoice[];
+            total: number;
+            paidCount: number;
+        }>();
+        filteredInvoices.forEach(inv => {
+            const startTime = new Date(inv.startTime);
+            const key = getBusinessDayKey(startTime);
+            let entry = map.get(key);
+            if (!entry) {
+                entry = { key, date: getBusinessDate(startTime), invoices: [], total: 0, paidCount: 0 };
+                map.set(key, entry);
+            }
+            entry.invoices.push(inv);
+            if (inv.status === 'paid') {
+                entry.total += inv.totalPrice;
+                entry.paidCount += 1;
+            }
+        });
+        return Array.from(map.values()).sort((a, b) => b.date.getTime() - a.date.getTime());
+    }, [filteredInvoices]);
+
+    const totalBusinessDayInvoices = useMemo(
+        () => businessDays.reduce((s, d) => s + d.invoices.length, 0),
+        [businessDays]
+    );
+
+    const toggleDay = (key: string) =>
+        setExpandedDays(prev => ({ ...prev, [key]: !prev[key] }));
+    const openAllDays = () =>
+        setExpandedDays(Object.fromEntries(businessDays.map(d => [d.key, true])));
+    const closeAllDays = () => setExpandedDays({});
+
     /* ── Export ─── */
     const exportToCSV = () => {
         if (!filteredInvoices.length) { toast.error('Không có dữ liệu để xuất'); return; }
@@ -278,7 +335,7 @@ export default function ReportsPage() {
         const rows = filteredInvoices.map(inv => [
             `#${inv.id.slice(0, 8).toUpperCase()}`,
             `Phòng ${(inv as any).roomNumber ?? ''}`,
-            new Date(inv.createdAt).toLocaleString('vi-VN'),
+            new Date(inv.startTime).toLocaleString('vi-VN'), // In ra giờ vào trong Excel
             Math.ceil(inv.totalPrice / 1000) * 1000,
             inv.status === 'paid' ? 'Đã thanh toán' : 'Chờ',
         ]);
@@ -531,6 +588,126 @@ export default function ReportsPage() {
                     </div>
                 </div>
 
+                {/* Danh sách hóa đơn theo ngày (gom theo ca 6h-6h) */}
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+                    <div className="px-5 py-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <h2 className="text-[13px] font-bold text-slate-800">
+                                Danh sách hóa đơn theo ngày
+                                {selectedStore ? ` — ${selectedStore.name}` : ''}
+                            </h2>
+                            <span className="bg-blue-50 text-blue-700 text-[11px] font-bold px-2.5 py-0.5 rounded-full">
+                                {businessDays.length} ngày · {totalBusinessDayInvoices} HĐ
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-3 text-[12px] font-semibold">
+                            <button
+                                onClick={openAllDays}
+                                className="text-blue-600 hover:text-blue-800 transition-colors"
+                            >
+                                Mở tất cả
+                            </button>
+                            <button
+                                onClick={closeAllDays}
+                                className="text-slate-500 hover:text-slate-700 transition-colors"
+                            >
+                                Thu gọn
+                            </button>
+                        </div>
+                    </div>
+                    <p className="px-5 py-2 text-[11px] text-slate-500 italic bg-slate-50/60 border-b border-slate-100">
+                        Một &quot;ngày làm việc&quot; tính từ <strong className="text-slate-700">06:00 sáng</strong> đến <strong className="text-slate-700">05:59 sáng hôm sau</strong> (rạng sáng vẫn thuộc ca tối hôm trước).
+                    </p>
+
+                    {isLoading ? (
+                        <div className="py-12 text-center text-slate-400 text-[13px] italic">Đang tải...</div>
+                    ) : businessDays.length === 0 ? (
+                        <div className="py-12 text-center text-slate-400 text-[13px] italic">Chưa có hóa đơn nào</div>
+                    ) : (
+                        <div className="divide-y divide-slate-100">
+                            {businessDays.map(day => {
+                                const isOpen = !!expandedDays[day.key];
+                                const weekday = VI_WEEKDAYS[day.date.getDay()];
+                                const dateLabel = day.date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                                return (
+                                    <div key={day.key}>
+                                        <button
+                                            onClick={() => toggleDay(day.key)}
+                                            className="w-full px-5 py-3 flex items-center gap-4 hover:bg-slate-50 transition-colors text-left"
+                                        >
+                                            <span className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center flex-shrink-0">
+                                                {isOpen
+                                                    ? <ChevronDown className="w-4 h-4 text-slate-500" />
+                                                    : <ChevronRight className="w-4 h-4 text-slate-500" />}
+                                            </span>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    <span className="text-[13px] font-bold text-slate-900">Ngày {dateLabel}</span>
+                                                    <span className="text-[11px] font-medium text-slate-400">{weekday}</span>
+                                                </div>
+                                                <div className="flex items-center gap-2 mt-0.5 text-[11px] flex-wrap">
+                                                    <span className="text-slate-500 font-semibold">{day.invoices.length} hóa đơn</span>
+                                                    <span className="text-slate-300">·</span>
+                                                    <span className="text-emerald-600 font-bold">{day.paidCount} đã thanh toán</span>
+                                                </div>
+                                            </div>
+                                            <span className="text-[14px] font-extrabold text-emerald-600 whitespace-nowrap">
+                                                {fmtVND(day.total)}đ
+                                            </span>
+                                        </button>
+                                        {isOpen && (
+                                            <div className="bg-slate-50/60 px-5 py-3 border-t border-slate-100">
+                                                <div className="overflow-x-auto">
+                                                    <table className="w-full text-[12px]">
+                                                        <thead>
+                                                            <tr className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                                                                <th className="text-left py-2 pr-3">Mã HD</th>
+                                                                <th className="text-left py-2 pr-3">Phòng</th>
+                                                                <th className="text-left py-2 pr-3">Giờ vào</th>
+                                                                <th className="text-right py-2 pr-3">Tổng tiền</th>
+                                                                <th className="text-center py-2 pr-3">Trạng thái</th>
+                                                                <th className="text-right py-2">Thao tác</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-slate-100">
+                                                            {day.invoices.map(inv => (
+                                                                <tr key={inv.id} className="hover:bg-white transition-colors">
+                                                                    <td className="py-2 pr-3 font-mono text-[11px] font-semibold text-slate-500">
+                                                                        #{inv.id.slice(0, 6).toUpperCase()}
+                                                                    </td>
+                                                                    <td className="py-2 pr-3 font-bold text-slate-900">
+                                                                        Phòng {(inv as any).roomNumber}
+                                                                    </td>
+                                                                    <td className="py-2 pr-3 text-slate-500">
+                                                                        {new Date(inv.startTime).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
+                                                                    </td>
+                                                                    <td className="py-2 pr-3 text-right font-bold text-slate-900">
+                                                                        {fmtVND(inv.totalPrice)}đ
+                                                                    </td>
+                                                                    <td className="py-2 pr-3 text-center">
+                                                                        <StatusBadge status={inv.status} />
+                                                                    </td>
+                                                                    <td className="py-2 text-right">
+                                                                        <Link href={`/dashboard/invoice/${inv.id}`}>
+                                                                            <button className="px-3 py-1 rounded-lg border border-slate-200 bg-white text-blue-600 text-[11px] font-bold hover:bg-blue-50 hover:border-blue-200 transition-all">
+                                                                                Chi tiết
+                                                                            </button>
+                                                                        </Link>
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+
                 {/* Invoice table */}
                 <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
                     <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3">
@@ -583,7 +760,7 @@ export default function ReportsPage() {
                                                 Phòng {(invoice as any).roomNumber}
                                             </td>
                                             <td className="px-4 py-3 text-[11px] text-slate-500">
-                                                {new Date(invoice.createdAt).toLocaleString('vi-VN')}
+                                                {new Date(invoice.startTime).toLocaleString('vi-VN')}
                                             </td>
                                             <td className="px-4 py-3 text-[13px] font-bold text-slate-900">
                                                 {fmtVND(invoice.totalPrice)}đ

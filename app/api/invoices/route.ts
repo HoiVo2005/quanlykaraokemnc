@@ -8,7 +8,7 @@ export async function POST(request: NextRequest) {
     // Get room session with room and store details
     const session = await prisma.roomSession.findUnique({
       where: { Id: roomSessionId },
-      include: { Room: true },
+      include: { Room: true, Invoice: true },
     });
 
     if (!session) {
@@ -18,6 +18,25 @@ export async function POST(request: NextRequest) {
     const room = session.Room;
     if (!room) {
       return Response.json({ error: 'Room not found' }, { status: 404 });
+    }
+
+    // Idempotency: nếu phiên đã có hóa đơn rồi thì trả về luôn, không tạo lại + không trừ kho lần nữa
+    if (session.Invoice) {
+      const existingItems = await prisma.orderItem.findMany({
+        where: { RoomSessionId: roomSessionId },
+      });
+      return Response.json({
+        ...session.Invoice,
+        items: existingItems.map(item => ({
+          id: item.Id,
+          roomSessionId: item.RoomSessionId,
+          productId: item.ProductId,
+          productName: item.ProductName,
+          price: Number(item.Price),
+          quantity: item.Quantity,
+          orderedAt: item.OrderedAt,
+        })),
+      });
     }
 
     // Get order items
@@ -48,6 +67,7 @@ export async function POST(request: NextRequest) {
     const totalPrice = !isNaN(requestedTotalPrice) ? requestedTotalPrice : Math.ceil(subtotal / 1000) * 1000;
 
     // Thực hiện trong transaction để đảm bảo tính nhất quán dữ liệu
+    // Gộp luôn việc trừ kho vào transaction để tránh trừ nhiều lần khi retry/mạng lỗi
     const [invoice] = await prisma.$transaction([
       prisma.invoice.create({
         data: {
@@ -73,6 +93,13 @@ export async function POST(request: NextRequest) {
         where: { Id: session.RoomId },
         data: { Status: 'empty' },
       }),
+      // Trừ kho cho từng món đã gọi
+      ...items.map(item =>
+        prisma.product.update({
+          where: { Id: item.ProductId },
+          data: { Quantity: { decrement: item.Quantity } },
+        })
+      ),
     ]);
 
     // Return invoice with items for display
